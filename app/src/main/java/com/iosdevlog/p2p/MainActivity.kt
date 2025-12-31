@@ -1,11 +1,18 @@
 package com.iosdevlog.p2p
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pInfo
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import java.net.InetAddress
+import java.net.NetworkInterface
+import java.util.Enumeration
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -65,6 +72,7 @@ class MainActivity : ComponentActivity(), WifiDirectManager.WifiDirectListener, 
     private var connectionStatus by mutableStateOf("Disconnected")
     private var messageInput by mutableStateOf("")
     private var isDiscovering by mutableStateOf(false)
+    private var currentIpAddress by mutableStateOf("Unknown IP")
 
     // 权限请求
     private val requestPermissionLauncher = registerForActivityResult(
@@ -84,6 +92,9 @@ class MainActivity : ComponentActivity(), WifiDirectManager.WifiDirectListener, 
         
         wifiDirectManager = WifiDirectManager(this, this)
         chatClient = ChatClient(this)
+        
+        // 获取当前IP地址
+        currentIpAddress = fetchCurrentIpAddress()
         
         setContent {
             P2PTheme {
@@ -105,9 +116,9 @@ class MainActivity : ComponentActivity(), WifiDirectManager.WifiDirectListener, 
                             .padding(it)
                             .padding(16.dp)
                     ) {
-                        // 连接状态
+                        // 连接状态和IP地址
                         Text(
-                            text = "Connection Status: $connectionStatus",
+                            text = "Connection Status: $connectionStatus | IP: $currentIpAddress",
                             style = MaterialTheme.typography.bodyLarge,
                             modifier = Modifier.padding(bottom = 16.dp)
                         )
@@ -155,6 +166,9 @@ class MainActivity : ComponentActivity(), WifiDirectManager.WifiDirectListener, 
 
     private fun startWifiDirect() {
         wifiDirectManager.registerReceiver()
+        // 检查当前连接状态，如果已经连接则直接进入聊天
+        wifiDirectManager.checkConnectionStatus()
+        // 开始设备发现，以便用户可以连接其他设备
         startDiscovery()
     }
 
@@ -195,7 +209,16 @@ class MainActivity : ComponentActivity(), WifiDirectManager.WifiDirectListener, 
     }
 
     override fun onGroupInfoAvailable(group: android.net.wifi.p2p.WifiP2pGroup?) {
-        // 处理组信息
+        // 从WiFi Direct组中获取当前设备的IP地址
+        if (group != null) {
+            Log.d("MainActivity", "Group info available: ${group.networkName}")
+            // 延迟获取IP地址，确保设备已经获取到DHCP分配的地址
+            Thread.sleep(1000) // 等待1秒
+            // 获取当前设备的WiFi Direct IP地址
+            val wifiDirectIp = getWifiDirectDeviceIp()
+            currentIpAddress = wifiDirectIp
+            Log.d("MainActivity", "WiFi Direct Device IP: $wifiDirectIp")
+        }
     }
 
     override fun onConnectionError(error: String) {
@@ -240,6 +263,65 @@ class MainActivity : ComponentActivity(), WifiDirectManager.WifiDirectListener, 
     override fun onError(error: String) {
         messages.add("System: $error")
         Log.e("MainActivity", "Chat error: $error")
+    }
+
+    // 获取当前IP地址
+    private fun fetchCurrentIpAddress(): String {
+        try {
+            val interfaces: Enumeration<NetworkInterface> = NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val networkInterface: NetworkInterface = interfaces.nextElement()
+                val addresses: Enumeration<InetAddress> = networkInterface.inetAddresses
+                while (addresses.hasMoreElements()) {
+                    val address: InetAddress = addresses.nextElement()
+                    val hostAddress = address.hostAddress
+                    if (!address.isLoopbackAddress && hostAddress != null && hostAddress.indexOf(":") < 0) {
+                        // 返回IPv4地址，排除IPv6和回环地址
+                        return hostAddress
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error getting IP address: ${e.message}")
+        }
+        return "Unknown IP"
+    }
+
+    // 获取WiFi Direct设备的实际IP地址
+    private fun getWifiDirectDeviceIp(): String {
+        try {
+            val interfaces: Enumeration<NetworkInterface> = NetworkInterface.getNetworkInterfaces()
+            Log.d("MainActivity", "Listing all network interfaces:")
+            while (interfaces.hasMoreElements()) {
+                val networkInterface: NetworkInterface = interfaces.nextElement()
+                val interfaceName = networkInterface.name
+                val displayName = networkInterface.displayName
+                val isUp = networkInterface.isUp
+                Log.d("MainActivity", "Interface: $interfaceName ($displayName), isUp: $isUp")
+                
+                // 只检查活动的网络接口
+                if (isUp) {
+                    val addresses: Enumeration<InetAddress> = networkInterface.inetAddresses
+                    while (addresses.hasMoreElements()) {
+                        val address: InetAddress = addresses.nextElement()
+                        val hostAddress = address.hostAddress
+                        val isLoopback = address.isLoopbackAddress
+                        Log.d("MainActivity", "  Address: $hostAddress, isLoopback: $isLoopback")
+                        if (!isLoopback && hostAddress != null && hostAddress.indexOf(":") < 0) {
+                            // 返回非回环的IPv4地址
+                            // 检查是否在192.168.49.x网段，且不是组所有者地址(192.168.49.1)
+                            if (hostAddress.startsWith("192.168.49.") && hostAddress != "192.168.49.1") {
+                                Log.d("MainActivity", "Found WiFi Direct IP: $hostAddress")
+                                return hostAddress
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error getting WiFi Direct IP address: ${e.message}")
+        }
+        return "Unknown WiFi Direct IP"
     }
 
     override fun onDestroy() {

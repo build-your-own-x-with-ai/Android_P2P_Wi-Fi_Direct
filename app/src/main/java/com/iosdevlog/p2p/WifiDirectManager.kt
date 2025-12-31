@@ -149,6 +149,22 @@ class WifiDirectManager(private val context: Context, private val listener: Wifi
         })
     }
 
+    @SuppressLint("MissingPermission")
+    fun checkConnectionStatus() {
+        // 检查当前连接状态
+        manager.requestConnectionInfo(channel) { info ->
+            if (info.groupFormed) {
+                Log.d(TAG, "Already connected: ${info.groupOwnerAddress}")
+                listener.onConnectionInfoAvailable(info)
+                // 同时请求组信息，以便获取完整的连接状态
+                manager.requestGroupInfo(channel) {
+                    listener.onGroupInfoAvailable(it)
+                }
+                listener.onConnectionSuccess()
+            }
+        }
+    }
+
     fun registerReceiver() {
         val intentFilter = IntentFilter().apply {
             addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
