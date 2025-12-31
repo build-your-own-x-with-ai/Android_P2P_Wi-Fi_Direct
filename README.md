@@ -78,7 +78,8 @@ A simple WiFi Direct chat application that allows devices to connect directly an
 │   │   │   ├── java/com/iosdevlog/p2p/
 │   │   │   │   ├── MainActivity.kt
 │   │   │   │   ├── WifiDirectManager.kt
-│   │   │   │   └── ChatClient.kt
+│   │   │   │   ├── ChatClient.kt
+│   │   │   │   └── ChatServer.kt
 │   │   │   └── res/
 │   │   └── test/
 │   └── build.gradle.kts

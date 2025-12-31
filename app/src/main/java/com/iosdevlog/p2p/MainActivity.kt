@@ -10,8 +10,13 @@ import android.net.wifi.p2p.WifiP2pInfo
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.io.PrintWriter
 import java.net.InetAddress
 import java.net.NetworkInterface
+import java.net.ServerSocket
+import java.net.Socket
 import java.util.Enumeration
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -51,10 +56,12 @@ import androidx.core.content.ContextCompat
 import com.iosdevlog.p2p.ui.theme.P2PTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
-class MainActivity : ComponentActivity(), WifiDirectManager.WifiDirectListener, ChatClient.ChatClientListener {
+class MainActivity : ComponentActivity(), WifiDirectManager.WifiDirectListener, ChatClient.ChatClientListener, ChatServer.ChatServerListener {
 
+    private lateinit var mainActivity: MainActivity
     private lateinit var wifiDirectManager: WifiDirectManager
     private lateinit var chatClient: ChatClient
+    private lateinit var chatServer: ChatServer
     private val requiredPermissions = arrayOf(
         Manifest.permission.ACCESS_WIFI_STATE,
         Manifest.permission.CHANGE_WIFI_STATE,
@@ -63,16 +70,17 @@ class MainActivity : ComponentActivity(), WifiDirectManager.WifiDirectListener, 
         Manifest.permission.NEARBY_WIFI_DEVICES,
         Manifest.permission.INTERNET
     )
-
     // 状态管理
     private val devices = mutableStateListOf<WifiP2pDevice>()
     private val messages = mutableStateListOf<String>()
     private var isConnected by mutableStateOf(false)
     private var isChatConnected by mutableStateOf(false)
+    private var isGroupOwner by mutableStateOf(false) // 记录当前设备是否是组所有者
     private var connectionStatus by mutableStateOf("Disconnected")
     private var messageInput by mutableStateOf("")
     private var isDiscovering by mutableStateOf(false)
     private var currentIpAddress by mutableStateOf("Unknown IP")
+    private var isServerRunning by mutableStateOf(false)
 
     // 权限请求
     private val requestPermissionLauncher = registerForActivityResult(
@@ -90,8 +98,10 @@ class MainActivity : ComponentActivity(), WifiDirectManager.WifiDirectListener, 
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         
+        mainActivity = this
         wifiDirectManager = WifiDirectManager(this, this)
         chatClient = ChatClient(this)
+        chatServer = ChatServer(8080, this)
         
         // 获取当前IP地址
         currentIpAddress = fetchCurrentIpAddress()
@@ -118,7 +128,7 @@ class MainActivity : ComponentActivity(), WifiDirectManager.WifiDirectListener, 
                     ) {
                         // 连接状态和IP地址
                         Text(
-                            text = "Connection Status: $connectionStatus | IP: $currentIpAddress",
+                            text = "Connection Status: $connectionStatus | IP: $currentIpAddress | Server: ${if (isServerRunning) "Running" else "Stopped"}",
                             style = MaterialTheme.typography.bodyLarge,
                             modifier = Modifier.padding(bottom = 16.dp)
                         )
@@ -184,7 +194,14 @@ class MainActivity : ComponentActivity(), WifiDirectManager.WifiDirectListener, 
     private fun sendMessage(message: String) {
         if (message.isNotEmpty()) {
             messages.add("Me: $message")
-            chatClient.sendMessage(message)
+            // 根据设备角色决定发送方式
+            if (isGroupOwner) {
+                // 组所有者直接通过服务器广播消息
+                chatServer.broadcastToAllClients(message)
+            } else {
+                // 客户端通过chatClient发送消息
+                chatClient.sendMessage(message)
+            }
             messageInput = ""
         }
     }
@@ -201,10 +218,21 @@ class MainActivity : ComponentActivity(), WifiDirectManager.WifiDirectListener, 
     }
 
     override fun onConnectionInfoAvailable(info: WifiP2pInfo) {
-        Log.d("MainActivity", "Connection info available: ${info.groupOwnerAddress}")
-        // 连接成功后，启动聊天客户端
-        if (!isChatConnected) {
-            chatClient.connect()
+        Log.d("MainActivity", "Connection info available: ${info.groupOwnerAddress}, isGroupOwner: ${info.isGroupOwner}")
+        isGroupOwner = info.isGroupOwner // 记录当前设备角色
+        // 根据角色决定启动服务端还是客户端
+        if (info.isGroupOwner) {
+            // 组所有者作为服务端，启动Chat Server
+            if (!isServerRunning) {
+                chatServer.start()
+            }
+            // 组所有者也需要进入聊天界面
+            isChatConnected = true
+        } else {
+            // 客户端连接到组所有者的Chat Server
+            if (!isChatConnected) {
+                chatClient.connect()
+            }
         }
     }
 
@@ -239,6 +267,8 @@ class MainActivity : ComponentActivity(), WifiDirectManager.WifiDirectListener, 
         isConnected = false
         isChatConnected = false
         chatClient.disconnect()
+        // 停止聊天服务器
+        chatServer.stop()
         Log.d("MainActivity", "Disconnected")
     }
 
@@ -263,6 +293,39 @@ class MainActivity : ComponentActivity(), WifiDirectManager.WifiDirectListener, 
     override fun onError(error: String) {
         messages.add("System: $error")
         Log.e("MainActivity", "Chat error: $error")
+    }
+
+    // ChatServerListener 实现
+    override fun onServerStarted() {
+        isServerRunning = true
+        messages.add("System: Chat server started")
+        Log.d("MainActivity", "Chat server started")
+    }
+
+    override fun onServerStopped() {
+        isServerRunning = false
+        messages.add("System: Chat server stopped")
+        Log.d("MainActivity", "Chat server stopped")
+    }
+
+    override fun onClientConnected(clientSocket: Socket) {
+        messages.add("System: Client connected from ${clientSocket.inetAddress.hostAddress}")
+        Log.d("MainActivity", "Client connected: ${clientSocket.inetAddress.hostAddress}")
+    }
+
+    override fun onClientDisconnected(clientSocket: Socket) {
+        messages.add("System: Client disconnected from ${clientSocket.inetAddress.hostAddress}")
+        Log.d("MainActivity", "Client disconnected: ${clientSocket.inetAddress.hostAddress}")
+    }
+
+    override fun onServerMessageReceived(clientSocket: Socket, message: String) {
+        // 服务器收到消息时，将其添加到消息列表
+        messages.add("Client ${clientSocket.inetAddress.hostAddress}: $message")
+    }
+
+    override fun onServerError(error: String) {
+        messages.add("System: Server error: $error")
+        Log.e("MainActivity", "Server error: $error")
     }
 
     // 获取当前IP地址
